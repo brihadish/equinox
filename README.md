@@ -80,7 +80,7 @@ _If you're looking to learn more about and/or discuss Event Sourcing and it's my
   - Minimize round trips (pluggable via [`ICache`](https://github.com/jet/equinox/blob/master/src/Equinox.Core/Cache.fs#L22) :pray: [@DSilence](https://github.com/jet/equinox/pull/161)
   - Minimize latency and bandwidth / Request Charges by maintaining the folded state, without making the Domain Model folded state serializable
 - Mature and comprehensive logging (using [Serilog](https://github.com/serilog/serilog) internally), with optimal performance and pluggable integration with your apps hosting context (we ourselves typically feed log info to Splunk and the metrics embedded in the `Serilog.Events.LogEvent` Properties to Prometheus; see relevant tests for examples)
-- **`Equinox.EventStore` In-stream Rolling Snapshots**: 
+- **`Equinox.EventStore` In-stream Rolling Snapshots**:
   - No additional round trips to the store needed at either the Load or Sync points in the flow
   - Support for multiple co-existing compaction schemas for a given stream (A 'compaction' event/snapshot is an Event). This is done by the [`FsCodec.IEventCodec`](https://github.com/jet/FsCodec#IEventCodec)
     - Compaction events typically do not get deleted (consistent with how EventStoreDB works), although it is safe to do so in concept
@@ -101,23 +101,7 @@ _If you're looking to learn more about and/or discuss Event Sourcing and it's my
   - It should be noted that from a querying perspective, the `Tip` shares the same structure as `Batch` documents (a potential future extension would be to carry some events in the `Tip` as [some interim versions of the implementation once did](https://github.com/jet/equinox/pull/58), see also [#109](https://github.com/jet/equinox/pull/109).
 - **`Equinox.CosmosStore` `RollingState` and `Custom` 'non-event-sourced' modes**: 
     - Uses 'Tip with Unfolds' encoding to avoid having to write event documents at all. This option benefits from the caching and consistency management mechanisms because the cost of writing and storing infinitely increasing events are removed. Search for `transmute` or `RollingState` in the `samples` and/or see [the `Checkpoint` Aggregate in Propulsion](https://github.com/jet/propulsion/blob/master/src/Propulsion.EventStore/Checkpoint.fs). One chief use of this mechanism is for tracking Summary Event feeds in [the `dotnet-templates` `summaryConsumer` template](https://github.com/jet/dotnet-templates/tree/master/propulsion-summary-consumer).
-- **`Equinox.DynamoStore`**:
-    - Most features and behaviors are as per `Equinox.CosmosStore`, with the following key differences:
-      - Instead of using a Stored Procedure as `CosmosStore` does, the implementation involves:
-        - conditional `PutItem` and [`UpdateItem`](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_UpdateItem.html) requests to accumulate events in the Tip (where there is space available).
-        - At the point where the Tip exceeds any of the configured and/or implicit limits, a [`TransactWriteItems`](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_TransactWriteItems.html) request is used (see [implementation in `FSharp.AWS.DynamoDB`](https://github.com/fsprojects/FSharp.AWS.DynamoDB/pull/48)):
-          - maximum event count (not limited by default)
-          - maximum accumulated event size (default 32KiB)
-          - DynamoDB Item Size Limit (hard limit of 400KiB)
-      - DynamoDB does not support an etag-checked Read API, which means a cache hit is not as efficient as it is on CosmosDB (and the data hence travels and is deserialized unnecessarily)
-      - Concurrency conflicts necessitate an additional roundtrip to resync [as the DynamoDB Service does not yield the item in the event of a `ConditionalCheckFailedException`](https://stackoverflow.com/questions/71622525)
-      - `Equinox.Cosmos.Core.Events.appendAtEnd`/`NonIdempotentAppend` has not been ported (there's no obvious clean and efficient way to do a conditional insert/update/split as the CosmosDB stored proc can, and this is a low usage feature)
-      - The implementation uses [the excellent `FSharp.AWS.DynamoDB` library](https://github.com/fsprojects/FSharp.AWS.DynamoDB)) (which wraps the standard AWS `AWSSDK.DynamoDBv2` SDK Package), and leans on [significant preparatory research](https://github.com/pierregoudjo/dynamodb_conditional_writes) :pray: [@pierregoudjo](https://github.com/pierregoudjo)
-      - `CosmosStore` dictates (as of V4) that event bodies be supplied as `System.Text.Json.JsonElement`s (in order that events can be included in the Document/ Items as JSON directly. This is also to underscore the fact that the only reasonable format to use is valid JSON; binary data would need to be base64 encoded. `DynamoStore` accepts and yields event bodies as arbitrary `ReadOnlyMemory<byte>` BLOBs (the AWS SDK round-trips such blobs as a `MemoryStream` and does not impose any restrictions on the blobs in terms of required format).
-      - `CosmosStore` defaults to compressing (with `System.IO.Compression.DeflateStream`) the event bodies for Unfolds; `DynamoStore` provides for (and defaults to) compressing event bodies for both Events and Unfolds. While both compression behaviors can be disabled (particularly if your Event Encoding already compresses, or the nature of your data or format is such that it will never compress), it should be noted that the key reason why this facility is provided is that minimizing Request Charges is imperative when request size directly maps to financial charges, 429s, reduced throughput and a lowered scaling ceiling.
-    - Azure CosmosDB's ChangeFeed API intrinsically supports replays of all the events in a Store, whereas the DynamoDB Streams facility only retains 24h of actions. As a result, there are ancillary components that provide equivalent functionality composed of:
-      - `Propulsion.DynamoStore.Lambda`: an AWS Lambda that is configured via a DynamoDB Streams Trigger to Index the Events (represented as Equinox Streams, typically in a separated `<tableName>-index` Table) as they are appended 
-      - `Propulsion.DynamoStore.DynamoStoreSource`: consumes the Index Streams akin to how `Propulsion.CosmosStore.CosmosStoreSource` consumes the CosmosDB Change Feed 
+- **`Equinox.DynamoStore`**: Most features and behaviors are as per `Equinox.CosmosStore`. Provides ChangeFeed-equivalent reactions capability _via a DynamoDB Streams Lambda *with different tradeoffs*_. See the [`DOCUMENTATION.md` section on `DynamoStore`](DOCUMENTATION.md#DynamoStore) for further information.
 
 # Currently Supported Data Stores
 
